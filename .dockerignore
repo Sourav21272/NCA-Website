@@ -1,0 +1,17 @@
+.git
+.env
+**/.env
+.env.*
+!.env.example
+backend/.jwt_secret
+**/__pycache__/
+**/*.py[cod]
+*.db
+**/*.db
+uploads/
+**/uploads/
+backend/exports/
+node_modules/
+**/node_modules/
+dist/
+**/dist/

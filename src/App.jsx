@@ -327,7 +327,7 @@ function LoginPage({ role }) {
         <Logo />
         <span className="login-kicker">{admin ? 'OWNER-ONLY ACCESS' : player ? 'DEDICATED PLAYER PORTAL' : 'NCA MEMBER PORTAL'}</span>
         <h1>{admin ? 'Administrator sign in' : player ? 'Player sign in' : 'Member sign in'}</h1>
-        <p>{admin ? 'Administrator accounts are created privately by the site owner. There is no public admin registration.' : player ? 'Use the player account created for you by an NCA administrator.' : 'Sign in to your NCA member account.'}</p>
+        <p>{admin ? 'Administrator accounts are created privately by the site owner. There is no public admin registration.' : player ? 'Use the player account created for you by an NCA administrator.' : 'Sign in to your NCA member account. Email verification and email-based password recovery are disabled.'}</p>
         <form onSubmit={submit}>
           <label>{admin ? 'Email address' : 'Username'}
             <input required autoComplete="username" type={admin ? 'email' : 'text'} value={username} onChange={e => setUsername(e.target.value)} />
@@ -339,7 +339,6 @@ function LoginPage({ role }) {
           <button className="primary-button" disabled={loading}>{loading ? 'Signing in…' : 'Sign in'}</button>
         </form>
         {!admin && !player && <div className="signup-prompt"><span>New to the NCA community?</span><Link to="/register">Create your account</Link></div>}
-        {!admin && !player && <Link className="login-switch" to="/forgot-password">Forgot your password?</Link>}
         {!admin && !player && <Link className="login-switch" to="/player/login">Dedicated player sign in</Link>}
         {player && <Link className="login-switch" to="/login">Member sign in or create an account</Link>}
         {!admin && <Link className="login-switch" to="/admin/login">Administrator sign in</Link>}
@@ -379,13 +378,14 @@ function RegisterPage() {
         <Logo />
         <span className="login-kicker">JOIN THE NCA COMMUNITY</span>
         <h1>{created ? 'Account created' : 'Create your account'}</h1>
-        <p>{created ? 'Check your email and follow the verification link before signing in.' : 'Create a member account. It cannot grant administrator or player access.'}</p>
-        {created ? <><button className="primary-button" onClick={() => navigate('/login')}>Continue to sign in</button><button className="login-switch" onClick={async () => {try {await api('/api/auth/member/resend-verification',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:form.email})});setError('If the account needs verification, a new email has been sent.')} catch(err) {setError(err.message)}}}>Resend verification email</button>{error && <p className="form-error">{error}</p>}</> : <form onSubmit={submit}>
+        <p>{created ? 'Your account is ready. Sign in to continue.' : 'Create a member account. It cannot grant administrator or player access.'}</p>
+        {created ? <button className="primary-button" onClick={() => navigate('/login')}>Continue to sign in</button> : <form onSubmit={submit}>
           <label>Full name<input required maxLength="120" autoComplete="name" value={form.name} onChange={e => setForm({...form,name:e.target.value})}/></label>
           <label>Username<input required maxLength="120" autoComplete="username" value={form.username} onChange={e => setForm({...form,username:e.target.value})}/></label>
-          <label>Email address<input required type="email" maxLength="254" autoComplete="email" value={form.email} onChange={e => setForm({...form,email:e.target.value})}/></label>
+          <label>Email address (optional)<input type="email" maxLength="254" autoComplete="email" value={form.email} onChange={e => setForm({...form,email:e.target.value})}/></label>
           <label>Password (12–72 characters)<input required minLength="12" maxLength="72" autoComplete="new-password" type="password" value={form.password} onChange={e => setForm({...form,password:e.target.value})}/></label>
           <label>Confirm password<input required minLength="12" maxLength="72" autoComplete="new-password" type="password" value={form.confirm} onChange={e => setForm({...form,confirm:e.target.value})}/></label>
+          <small>Email is optional and is not used for verification or password recovery.</small>
           {error && <p className="form-error">{error}</p>}
           <button className="primary-button">Create account</button>
         </form>}
@@ -393,83 +393,6 @@ function RegisterPage() {
       </section>
     </main>
   )
-}
-
-function VerifyEmailPage() {
-  const token = new URLSearchParams(window.location.search).get('token')
-  const [message, setMessage] = useState(token ? 'Verifying your email…' : 'This verification link is missing its token.')
-  const [failed, setFailed] = useState(!token)
-  useEffect(() => {
-    if (!token) return
-    api('/api/auth/member/verify-email', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({token}),
-    }).then(result => setMessage(result.message)).catch(err => {
-      setMessage(`Email verification failed: ${err.message}`)
-      setFailed(true)
-    })
-  }, [token])
-  return <main className="login-page"><section className="login-card"><Logo/><span className="login-kicker">EMAIL VERIFICATION</span><h1>{failed ? 'Verification failed' : 'Verify email'}</h1><p>{message}</p><Link className="primary-button" to="/login">Go to sign in</Link></section></main>
-}
-
-function ForgotPasswordPage() {
-  const [email, setEmail] = useState('')
-  const [message, setMessage] = useState('')
-  const [error, setError] = useState('')
-  const submit = async (e) => {
-    e.preventDefault()
-    setError('')
-    try {
-      const result = await api('/api/auth/member/request-password-reset', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({email}),
-      })
-      setMessage(result.message)
-    } catch (err) {
-      setError(err.message)
-    }
-  }
-  return <main className="login-page"><section className="login-card"><Logo/><span className="login-kicker">ACCOUNT RECOVERY</span><h1>Reset your password</h1><p>Enter the verified email on your member account. If it matches, we’ll send a one-time reset link.</p>
-    <form onSubmit={submit}><label>Email address<input required type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)}/></label>{error && <p className="form-error">{error}</p>}{message && <p className="upload-status">{message}</p>}<button className="primary-button">Send reset link</button></form>
-    <Link className="login-switch" to="/login">Back to sign in</Link>
-  </section></main>
-}
-
-function ResetPasswordPage() {
-  const navigate = useNavigate()
-  const token = new URLSearchParams(window.location.search).get('token') || ''
-  const [password, setPassword] = useState('')
-  const [confirm, setConfirm] = useState('')
-  const [error, setError] = useState('')
-  const [done, setDone] = useState(false)
-  const submit = async (e) => {
-    e.preventDefault()
-    setError('')
-    if (password !== confirm) {
-      setError('The passwords do not match.')
-      return
-    }
-    try {
-      await api('/api/auth/member/reset-password', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({token, password}),
-      })
-      setDone(true)
-    } catch (err) {
-      setError(`Password reset failed: ${err.message}`)
-    }
-  }
-  return <main className="login-page"><section className="login-card"><Logo/><span className="login-kicker">ACCOUNT RECOVERY</span><h1>{done ? 'Password updated' : 'Choose a new password'}</h1>
-    {done ? <button className="primary-button" onClick={() => navigate('/login')}>Continue to sign in</button> : <form onSubmit={submit}>
-      {!token && <p className="form-error">This reset link is missing its token. Request another link.</p>}
-      <label>New password (12–72 characters)<input required minLength="12" maxLength="72" autoComplete="new-password" type="password" value={password} onChange={e => setPassword(e.target.value)}/></label>
-      <label>Confirm new password<input required minLength="12" maxLength="72" autoComplete="new-password" type="password" value={confirm} onChange={e => setConfirm(e.target.value)}/></label>
-      {error && <p className="form-error">{error}</p>}<button className="primary-button" disabled={!token}>Update password</button>
-    </form>}
-  </section></main>
 }
 
 function MemberAccountPage() {
@@ -585,6 +508,35 @@ function AdminPage() {
     api('/api/announcements').then(setAnnouncements).catch(() => {})
     api('/api/rules').then(setRules).catch(() => {})
   }, [navigate])
+
+  const downloadDataExport = async () => {
+    setAdminMessage('Preparing Excel data backup…')
+    try {
+      const token = localStorage.getItem('nca_admin_token')
+      const response = await fetch(`${API}/api/admin/export.xlsx`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      if (!response.ok) {
+        const body = await response.text()
+        let message = body
+        try {
+          message = JSON.parse(body).detail || body
+        } catch {}
+        throw new Error(message)
+      }
+      const url = URL.createObjectURL(await response.blob())
+      const link = document.createElement('a')
+      link.href = url
+      link.download = 'nca_data_export.xlsx'
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      setAdminMessage('Excel backup downloaded and saved on the backend.')
+    } catch (err) {
+      setAdminMessage(`Excel backup failed: ${err.message}`)
+    }
+  }
 
   const savePlayer = async (e) => {
     e.preventDefault()
@@ -852,7 +804,15 @@ function AdminPage() {
       <section className="admin-main">
         <div className="admin-top"><div><small>ADMINISTRATION</small><h1>{tab[0].toUpperCase() + tab.slice(1)}</h1></div><Bell size={20}/></div>
         {adminMessage && <p className="upload-status">{adminMessage}</p>}
-        {tab === 'overview' && <><div className="admin-stats"><Stat icon={Users} value={dashboard?.total_players ?? 0} label="Players"/><Stat icon={CalendarDays} value={dashboard?.matches_played ?? 0} label="Matches"/><Stat icon={Trophy} value={dashboard?.total_runs ?? 0} label="Runs"/><Stat icon={ShieldCheck} value={dashboard?.total_wickets ?? 0} label="Wickets"/></div><div className="admin-grid"><div className="admin-panel"><h3>Recent activity</h3><EmptyCard title="Activity log">Administrative actions are recorded in the database.</EmptyCard></div><div className="admin-panel"><h3>Top rank</h3><div className="top-rank"><Trophy/><strong>{dashboard?.top_ranked || 'No ranking yet'}</strong></div></div></div></>}
+        {tab === 'overview' && <>
+          <div className="admin-stats"><Stat icon={Users} value={dashboard?.total_players ?? 0} label="Players"/><Stat icon={CalendarDays} value={dashboard?.matches_played ?? 0} label="Matches"/><Stat icon={Trophy} value={dashboard?.total_runs ?? 0} label="Runs"/><Stat icon={ShieldCheck} value={dashboard?.total_wickets ?? 0} label="Wickets"/></div>
+          <div className="admin-panel">
+            <h3>Excel data backup</h3>
+            <p>Export database tables to an Excel workbook. Password hashes and email action tokens are excluded; uploaded PDFs and images remain in the uploads folder.</p>
+            <button type="button" className="primary-button" onClick={downloadDataExport}>Download Excel backup</button>
+          </div>
+          <div className="admin-grid"><div className="admin-panel"><h3>Recent activity</h3><EmptyCard title="Activity log">Administrative actions are recorded in the database.</EmptyCard></div><div className="admin-panel"><h3>Top rank</h3><div className="top-rank"><Trophy/><strong>{dashboard?.top_ranked || 'No ranking yet'}</strong></div></div></div>
+        </>}
         {tab === 'players' && <>
           <div className="admin-panel">
             <h3>{editingPlayerId ? 'Edit player profile' : 'Add player'}</h3>
@@ -942,9 +902,6 @@ function App() {
       <Routes>
         <Route path="/login" element={<LoginPage role="member" />} />
         <Route path="/register" element={<RegisterPage />} />
-        <Route path="/verify-email" element={<VerifyEmailPage />} />
-        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-        <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route path="/player/login" element={<LoginPage role="player" />} />
         <Route path="/admin/login" element={<LoginPage role="admin" />} />
         <Route path="/admin" element={<AdminPage />} />

@@ -4,19 +4,20 @@ import os
 import re
 import secrets
 import shutil
-import smtplib
-import urllib.parse
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from email.message import EmailMessage
 
 import pdfplumber
 import pypdfium2 as pdfium
 import pytesseract
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
 from jose import JWTError, jwt
@@ -26,7 +27,7 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 from database import Base, engine, get_db
-from models import Admin, Announcement, DailyReport, Match, Member, Player, Rule, Scorecard, Team, ActivityLog, BattingStat, BowlingStat, RankingSnapshot, RankingEntry, EmailActionToken
+from models import Admin, Announcement, DailyReport, Match, Member, Player, Rule, Scorecard, Team, ActivityLog, BattingStat, BowlingStat, RankingSnapshot, RankingEntry
 
 Base.metadata.create_all(bind=engine)
 with engine.begin() as connection:
@@ -58,6 +59,8 @@ with engine.begin() as connection:
     connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_members_username_nocase ON members(username COLLATE NOCASE)"))
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "./uploads"))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+EXPORT_DIR = Path(os.getenv("EXPORT_DIR", str(Path(__file__).resolve().parent / "exports")))
+EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 JWT_SECRET = os.getenv("JWT_SECRET")
 if not JWT_SECRET:
@@ -144,19 +147,7 @@ class LoginIn(BaseModel):
 class MemberRegisterIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     username: str = Field(min_length=1, max_length=120)
-    email: str = Field(min_length=3, max_length=254)
-    password: str = Field(min_length=12, max_length=72)
-
-
-class EmailIn(BaseModel):
-    email: str = Field(min_length=3, max_length=254)
-
-
-class EmailTokenIn(BaseModel):
-    token: str = Field(min_length=32, max_length=256)
-
-
-class PasswordResetIn(EmailTokenIn):
+    email: str | None = Field(default=None, max_length=254)
     password: str = Field(min_length=12, max_length=72)
 
 
@@ -264,76 +255,6 @@ def extract_scorecard_text(path: Path):
     return text_content, "ocr_extracted" if text_content.strip() else "ocr_no_text"
 
 
-def issue_email_token(db: Session, member: Member, purpose: str):
-    db.query(EmailActionToken).filter(
-        EmailActionToken.member_id == member.id,
-        EmailActionToken.purpose == purpose,
-        EmailActionToken.used_at.is_(None),
-    ).update({"used_at": datetime.utcnow()})
-    raw_token = secrets.token_urlsafe(36)
-    token = EmailActionToken(
-        member_id=member.id,
-        purpose=purpose,
-        token_hash=hashlib.sha256(raw_token.encode()).hexdigest(),
-        expires_at=datetime.utcnow() + timedelta(hours=24 if purpose == "verify" else 1),
-    )
-    db.add(token)
-    db.flush()
-    return raw_token
-
-
-def send_member_email(recipient: str, subject: str, body: str):
-    host = os.getenv("SMTP_HOST", "").strip()
-    sender = os.getenv("SMTP_FROM", "").strip()
-    if not host or not sender:
-        raise RuntimeError("Email is not configured. Set SMTP_HOST and SMTP_FROM in the local .env file.")
-    message = EmailMessage()
-    message["Subject"] = subject
-    message["From"] = sender
-    message["To"] = recipient
-    message.set_content(body)
-    port = int(os.getenv("SMTP_PORT", "587"))
-    username = os.getenv("SMTP_USER", "")
-    password = os.getenv("SMTP_PASSWORD", "")
-    timeout = 15
-    if os.getenv("SMTP_USE_SSL", "false").lower() == "true":
-        with smtplib.SMTP_SSL(host, port, timeout=timeout) as smtp:
-            if username:
-                smtp.login(username, password)
-            smtp.send_message(message)
-    else:
-        with smtplib.SMTP(host, port, timeout=timeout) as smtp:
-            if os.getenv("SMTP_STARTTLS", "true").lower() != "false":
-                smtp.starttls()
-            if username:
-                smtp.login(username, password)
-            smtp.send_message(message)
-
-
-def ensure_email_configured():
-    if not os.getenv("SMTP_HOST", "").strip() or not os.getenv("SMTP_FROM", "").strip():
-        raise HTTPException(503, "Email service is not configured. Contact the site administrator.")
-    try:
-        port = int(os.getenv("SMTP_PORT", "587"))
-    except ValueError:
-        raise HTTPException(503, "Email service has an invalid SMTP_PORT. Contact the site administrator.")
-    if not 1 <= port <= 65535:
-        raise HTTPException(503, "Email service has an invalid SMTP_PORT. Contact the site administrator.")
-
-
-def send_member_action_link(member: Member, token: str, purpose: str):
-    base_url = os.getenv("FRONTEND_URL", "http://127.0.0.1:5173").rstrip("/")
-    if purpose == "verify":
-        url = f"{base_url}/verify-email?token={urllib.parse.quote(token)}"
-        subject = "Verify your NCA member email"
-        action = "Verify your email address"
-    else:
-        url = f"{base_url}/reset-password?token={urllib.parse.quote(token)}"
-        subject = "Reset your NCA member password"
-        action = "Reset your password"
-    send_member_email(member.email, subject, f"Hello {member.name},\n\n{action} using this one-time link:\n{url}\n\nThis link expires in {'24 hours' if purpose == 'verify' else '1 hour'}. If you did not request this, you can ignore this email.")
-
-
 def record_ranking_snapshot(db: Session):
     players = db.query(Player).order_by(Player.ranking_points.desc(), Player.runs.desc(), Player.id.asc()).all()
     snapshot = RankingSnapshot()
@@ -343,6 +264,72 @@ def record_ranking_snapshot(db: Session):
     ]
     db.add(snapshot)
     db.flush()
+
+
+def excel_safe_parts(value):
+    if not isinstance(value, str):
+        return [value]
+    parts = [value[index:index + 32766] for index in range(0, len(value), 32766)] or [""]
+    return [f"'{part}" if part.lstrip().startswith(("=", "+", "-", "@")) else part for part in parts]
+
+
+def write_data_export(db: Session):
+    workbook = Workbook()
+    info = workbook.active
+    info.title = "export_info"
+    info.append(["NCA data export", "Value"])
+    info.append(["Generated at (UTC)", datetime.utcnow()])
+    info.append(["Excluded", "Password hashes and email action tokens are not exported."])
+    info.append(["Media files", "PDF/image files remain in the uploads directory; this workbook contains their database records."])
+
+    for table in sorted(Base.metadata.sorted_tables, key=lambda item: item.name):
+        if table.name == "email_action_tokens":
+            continue
+        columns = [
+            column for column in table.columns
+            if "password" not in column.name.lower() and "token" not in column.name.lower()
+        ]
+        rows = db.execute(select(*columns)).all()
+        part_counts = [
+            max((len(excel_safe_parts(row[index])) for row in rows), default=1)
+            for index in range(len(columns))
+        ]
+        sheet = workbook.create_sheet(title=table.name[:31])
+        headers = [
+            f"{column.name}_part_{part + 1}" if part else column.name
+            for column, count in zip(columns, part_counts)
+            for part in range(count)
+        ]
+        sheet.append(headers)
+        for cell in sheet[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="17324D")
+        for row in rows:
+            values = []
+            for index, value in enumerate(row):
+                parts = excel_safe_parts(value)
+                values.extend(parts + [None] * (part_counts[index] - len(parts)))
+            sheet.append(values)
+        sheet.freeze_panes = "A2"
+        sheet.auto_filter.ref = sheet.dimensions
+        for column_index in range(1, len(headers) + 1):
+            values = [
+                sheet.cell(row=row_index, column=column_index).value
+                for row_index in range(1, sheet.max_row + 1)
+            ]
+            width = max((len(str(value)) for value in values if value is not None), default=10)
+            sheet.column_dimensions[get_column_letter(column_index)].width = min(max(width + 2, 12), 60)
+
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    export_path = EXPORT_DIR / "nca_data_export.xlsx"
+    temporary_path = EXPORT_DIR / f".nca_data_export-{secrets.token_hex(8)}.tmp.xlsx"
+    try:
+        workbook.save(temporary_path)
+        temporary_path.replace(export_path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+    return export_path
 
 
 @app.post("/api/images/upload")
@@ -522,6 +509,17 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/api/admin/export.xlsx")
+def export_admin_data(db: Session = Depends(get_db), identity=Depends(require_admin)):
+    export_path = write_data_export(db)
+    return FileResponse(
+        export_path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=export_path.name,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.post("/api/auth/admin/login")
 def admin_login(data: LoginIn, db: Session = Depends(get_db)):
     admin = db.query(Admin).filter(func.lower(Admin.email) == data.username.lower()).first()
@@ -539,109 +537,23 @@ def admin_login(data: LoginIn, db: Session = Depends(get_db)):
 def member_register(data: MemberRegisterIn, db: Session = Depends(get_db)):
     name = data.name.strip()
     username = data.username.strip()
-    email = data.email.strip().lower()
+    email = data.email.strip().lower() if data.email and data.email.strip() else None
     if not name or not username:
         raise HTTPException(400, "Name and username are required")
-    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+    if email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
         raise HTTPException(400, "Enter a valid email address")
     if len(username) > 120 or len(name) > 120:
         raise HTTPException(400, "Name and username must be 120 characters or fewer")
     if len(data.password) < 12 or len(data.password) > 72:
         raise HTTPException(400, "Passwords must be 12–72 characters")
-    ensure_email_configured()
     if db.query(Member).filter(func.lower(Member.username) == username.lower()).first():
         raise HTTPException(409, "That username is already registered")
-    if db.query(Member).filter(func.lower(Member.email) == email).first():
+    if email and db.query(Member).filter(func.lower(Member.email) == email).first():
         raise HTTPException(409, "That email address is already registered")
     member = Member(name=name, username=username, email=email, password_hash=pwd_context.hash(data.password))
     db.add(member)
-    db.flush()
-    token = issue_email_token(db, member, "verify")
     db.commit()
-    try:
-        send_member_action_link(member, token, "verify")
-    except (OSError, smtplib.SMTPException, RuntimeError) as exc:
-        raise HTTPException(503, f"Account created, but the verification email could not be sent. Request a new email later. ({exc})")
-    return {"success": True, "message": "Account created. Check your email to verify it before signing in."}
-
-
-@app.post("/api/auth/member/resend-verification")
-def resend_member_verification(data: EmailIn, db: Session = Depends(get_db)):
-    ensure_email_configured()
-    email = data.email.strip().lower()
-    member = db.query(Member).filter(func.lower(Member.email) == email).first()
-    if member and not member.email_verified:
-        token = issue_email_token(db, member, "verify")
-        db.commit()
-        try:
-            send_member_action_link(member, token, "verify")
-        except (OSError, smtplib.SMTPException, RuntimeError) as exc:
-            raise HTTPException(503, f"Verification email could not be sent. Please try again later. ({exc})")
-    return {"success": True, "message": "If the account needs verification, an email has been sent."}
-
-
-@app.post("/api/auth/member/verify-email")
-def verify_member_email(data: EmailTokenIn, db: Session = Depends(get_db)):
-    token_hash = hashlib.sha256(data.token.encode()).hexdigest()
-    action = db.query(EmailActionToken).filter(
-        EmailActionToken.token_hash == token_hash,
-        EmailActionToken.purpose == "verify",
-        EmailActionToken.used_at.is_(None),
-        EmailActionToken.expires_at > datetime.utcnow(),
-    ).first()
-    if not action:
-        raise HTTPException(400, "Verification link is invalid, expired or already used")
-    member = db.get(Member, action.member_id)
-    if not member:
-        raise HTTPException(400, "Verification link is invalid or expired")
-    action.used_at = datetime.utcnow()
-    member.email_verified = True
-    db.query(EmailActionToken).filter(
-        EmailActionToken.member_id == member.id,
-        EmailActionToken.purpose == "verify",
-        EmailActionToken.used_at.is_(None),
-    ).update({"used_at": datetime.utcnow()})
-    db.commit()
-    return {"success": True, "message": "Email verified. You can now sign in."}
-
-
-@app.post("/api/auth/member/request-password-reset")
-def request_member_password_reset(data: EmailIn, db: Session = Depends(get_db)):
-    ensure_email_configured()
-    email = data.email.strip().lower()
-    member = db.query(Member).filter(
-        func.lower(Member.email) == email,
-        Member.email_verified.is_(True),
-        Member.active.is_(True),
-    ).first()
-    if member:
-        token = issue_email_token(db, member, "reset")
-        db.commit()
-        try:
-            send_member_action_link(member, token, "reset")
-        except (OSError, smtplib.SMTPException, RuntimeError) as exc:
-            raise HTTPException(503, f"Password reset email could not be sent. Please try again later. ({exc})")
-    return {"success": True, "message": "If a verified account exists for that email, a reset link has been sent."}
-
-
-@app.post("/api/auth/member/reset-password")
-def reset_member_password(data: PasswordResetIn, db: Session = Depends(get_db)):
-    token_hash = hashlib.sha256(data.token.encode()).hexdigest()
-    action = db.query(EmailActionToken).filter(
-        EmailActionToken.token_hash == token_hash,
-        EmailActionToken.purpose == "reset",
-        EmailActionToken.used_at.is_(None),
-        EmailActionToken.expires_at > datetime.utcnow(),
-    ).first()
-    if not action:
-        raise HTTPException(400, "Reset link is invalid, expired or already used")
-    member = db.get(Member, action.member_id)
-    if not member or not member.active:
-        raise HTTPException(400, "Reset link is invalid or expired")
-    member.password_hash = pwd_context.hash(data.password)
-    action.used_at = datetime.utcnow()
-    db.commit()
-    return {"success": True, "message": "Password reset. You can sign in with your new password."}
+    return {"success": True, "message": "Account created. You can now sign in."}
 
 
 @app.post("/api/auth/member/login")
@@ -649,8 +561,6 @@ def member_login(data: LoginIn, db: Session = Depends(get_db)):
     member = db.query(Member).filter(func.lower(Member.username) == data.username.lower()).first()
     if not member or not member.active or not pwd_context.verify(data.password, member.password_hash):
         raise HTTPException(401, "Invalid username or password")
-    if member.email and not member.email_verified:
-        raise HTTPException(403, "Verify your email address before signing in")
     return {
         "access_token": create_access_token(member.username, "member", member.id),
         "token_type": "bearer",
