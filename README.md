@@ -34,7 +34,7 @@ Set a strong `JWT_SECRET` in `.env` before starting the container. For productio
 
 ## Configuration
 
-Copy `.env.example` to `.env`. Set a strong `JWT_SECRET` and a persistent `DATABASE_URL` for production. SQLite is suitable for a single API instance with persistent storage; a multi-instance deployment needs PostgreSQL and a compatible database driver/migration setup. The API reads `.env` when it starts. Never commit `.env` or share its credentials. `ADMIN_EMAIL` and `ADMIN_PASSWORD` can bootstrap the owner account once when the admin table is empty; otherwise use the private setup script below.
+Copy `.env.example` to `.env`. Set a strong `JWT_SECRET` and a persistent `DATABASE_URL` for production. SQLite is suitable for a single API instance with persistent storage; a multi-instance deployment needs PostgreSQL and a compatible database driver/migration setup. The API reads `.env` when it starts. Never commit `.env` or share its credentials. `ADMIN_EMAIL` and `ADMIN_PASSWORD` can bootstrap the owner account once when the admin table is empty. On Render, set them as environment variables or provide Secret Files with those exact filenames (mounted under `/etc/secrets`); environment variables take precedence. Otherwise, use the private setup script below.
 
 ## Accounts and access
 

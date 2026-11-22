@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 from database import Base, engine, get_db
 from models import Admin, Announcement, DailyReport, Match, Member, Player, Rule, Scorecard, Team, ActivityLog, BattingStat, BowlingStat, RankingSnapshot, RankingEntry
+from runtime_config import read_config_value
 
 Base.metadata.create_all(bind=engine)
 with engine.begin() as connection:
@@ -70,17 +71,20 @@ if not JWT_SECRET:
     JWT_SECRET = secret_path.read_text(encoding="utf-8").strip()
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 bearer = HTTPBearer(auto_error=False)
+admin_email = read_config_value("ADMIN_EMAIL")
+admin_password = read_config_value("ADMIN_PASSWORD")
+admin_name = read_config_value("ADMIN_NAME")
 with engine.begin() as connection:
     admin_count = connection.execute(text("SELECT COUNT(*) FROM admins")).scalar_one()
-    if admin_count == 0 and os.getenv("ADMIN_EMAIL") and os.getenv("ADMIN_PASSWORD"):
-        if len(os.getenv("ADMIN_PASSWORD")) < 12:
-            raise RuntimeError("ADMIN_PASSWORD must be at least 12 characters")
+    if admin_count == 0 and admin_email and admin_password:
+        if not 12 <= len(admin_password) <= 72:
+            raise RuntimeError("ADMIN_PASSWORD must be between 12 and 72 characters")
         connection.execute(
             text("INSERT INTO admins (name, email, password_hash, role, active) VALUES (:name, :email, :password_hash, 'super_admin', 1)"),
             {
-                "name": os.getenv("ADMIN_NAME", "NCA Administrator"),
-                "email": os.getenv("ADMIN_EMAIL").strip().lower(),
-                "password_hash": pwd_context.hash(os.getenv("ADMIN_PASSWORD")),
+                "name": admin_name or "NCA Administrator",
+                "email": admin_email.strip().lower(),
+                "password_hash": pwd_context.hash(admin_password),
             },
         )
 
