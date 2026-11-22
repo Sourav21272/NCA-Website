@@ -44,7 +44,7 @@ Copy `.env.example` to `.env`. Set a strong `JWT_SECRET` and a persistent `DATAB
 - The admin dashboard at `/admin` and all write/scorecard-review API routes require that owner account's sign-in. Do not share the password or expose terminal/database access to other users.
 - Member registration and sign-in do not require email or SMTP. Email-based verification and self-service password recovery are disabled; there is currently no member self-service password-reset flow.
 
-Scorecard uploads extract embedded text and use OCR for image-only pages when Tesseract is installed. OCR status is shown with each uploaded scorecard; the administrator must review and correct match details and every statistic before approving. Only approved scorecards update player career totals and rankings. A ranking snapshot is recorded on each approval; history begins with the first approval after this feature is installed.
+Scorecard uploads extract embedded text and use OCR for image-only pages when Tesseract is installed. The parser fills match details and batting/bowling rows, and creates missing player profiles from extracted names; generated profiles do not include login credentials. The administrator reviews the extracted values before approval. Only approved scorecards update player career totals and rankings. A ranking snapshot is recorded on each approval; history begins with the first approval after this feature is installed.
 
 ## Included
 

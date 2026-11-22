@@ -29,6 +29,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 from database import Base, engine, get_db
 from models import Admin, Announcement, DailyReport, Match, Member, Player, Rule, Scorecard, Team, ActivityLog, BattingStat, BowlingStat, RankingSnapshot, RankingEntry
 from runtime_config import read_config_value
+from scorecard_import import player_registry, prepare_scorecard_review
 
 Base.metadata.create_all(bind=engine)
 with engine.begin() as connection:
@@ -183,44 +184,6 @@ class ScorecardReview(BaseModel):
     result: str = ""
     batting: list[BattingReview] = []
     bowling: list[BowlingReview] = []
-
-
-def suggest_scorecard_rows(text_content: str, players: list[Player]):
-    mode = ""
-    batting = {}
-    bowling = {}
-    for line in text_content.splitlines():
-        normalized = line.lower()
-        if "bowling" in normalized and any(word in normalized for word in ("analysis", "figures", "bowler")):
-            mode = "bowling"
-            continue
-        if "batter" in normalized or "batsman" in normalized or "batting" in normalized:
-            mode = "batting"
-            continue
-        if mode not in {"batting", "bowling"}:
-            continue
-        for player in players:
-            match = re.search(rf"\b{re.escape(player.name)}\b", line, re.IGNORECASE)
-            if not match:
-                continue
-            values = re.findall(r"(?<![A-Za-z])\d+(?:\.\d+)?", line[match.end():])
-            if mode == "batting" and len(values) >= 4:
-                batting[player.id] = {
-                    "player_id": player.id,
-                    "runs": int(float(values[0])),
-                    "balls": int(float(values[1])),
-                    "fours": int(float(values[2])),
-                    "sixes": int(float(values[3])),
-                }
-            elif mode == "bowling" and len(values) >= 4:
-                bowling[player.id] = {
-                    "player_id": player.id,
-                    "overs": float(values[0]),
-                    "runs_conceded": int(float(values[2])),
-                    "wickets": int(float(values[3])),
-                }
-            break
-    return {"batting": list(batting.values()), "bowling": list(bowling.values())}
 
 
 def extract_scorecard_text(path: Path):
@@ -792,14 +755,28 @@ async def upload_scorecard(file: UploadFile = File(...), db: Session = Depends(g
     path = UPLOAD_DIR / filename
     path.write_bytes(content)
     text_content, extraction_status = extract_scorecard_text(path)
-    scorecard = Scorecard(original_filename=file.filename, stored_path=str(path), file_hash=digest, status="pending", extracted_text=text_content, extraction_status=extraction_status)
+    players_by_name, existing_codes = player_registry(db)
+    review_data = prepare_scorecard_review(text_content, file.filename, db, players_by_name, existing_codes)
+    scorecard = Scorecard(
+        original_filename=file.filename,
+        stored_path=str(path),
+        file_hash=digest,
+        status="pending",
+        extracted_text=text_content,
+        extraction_status=extraction_status,
+        review_data=json.dumps(review_data),
+    )
     db.add(scorecard)
     db.commit()
     db.refresh(scorecard)
-    suggestions = suggest_scorecard_rows(text_content, db.query(Player).all())
-    scorecard.review_data = json.dumps(suggestions)
-    db.commit()
-    return {"id": scorecard.id, "filename": scorecard.original_filename, "status": "pending", "extraction_status": extraction_status, "extracted_text": text_content[:12000], **suggestions}
+    return {
+        "id": scorecard.id,
+        "filename": scorecard.original_filename,
+        "status": "pending",
+        "extraction_status": extraction_status,
+        "extracted_text": text_content[:12000],
+        **review_data,
+    }
 
 
 @app.post("/api/scorecards/upload-multiple")
@@ -808,6 +785,7 @@ async def upload_scorecards(files: list[UploadFile] = File(...), db: Session = D
         raise HTTPException(400, "No PDF files were selected")
 
     results = []
+    players_by_name, existing_codes = player_registry(db)
     for file in files:
         if not (file.filename or "").lower().endswith(".pdf"):
             results.append({"filename": file.filename, "success": False, "message": "Only PDF files are accepted"})
@@ -828,6 +806,13 @@ async def upload_scorecards(files: list[UploadFile] = File(...), db: Session = D
         path = UPLOAD_DIR / filename
         path.write_bytes(content)
         text_content, extraction_status = extract_scorecard_text(path)
+        review_data = prepare_scorecard_review(
+            text_content,
+            file.filename,
+            db,
+            players_by_name,
+            existing_codes,
+        )
 
         scorecard = Scorecard(
             original_filename=file.filename,
@@ -836,8 +821,8 @@ async def upload_scorecards(files: list[UploadFile] = File(...), db: Session = D
             status="pending",
             extracted_text=text_content,
             extraction_status=extraction_status,
+            review_data=json.dumps(review_data),
         )
-        scorecard.review_data = json.dumps(suggest_scorecard_rows(text_content, db.query(Player).all()))
         db.add(scorecard)
         db.flush()
         results.append({
@@ -847,7 +832,7 @@ async def upload_scorecards(files: list[UploadFile] = File(...), db: Session = D
             "status": "pending",
             "extraction_status": extraction_status,
             "extracted_text": text_content[:12000],
-            **json.loads(scorecard.review_data),
+            **review_data,
         })
 
     db.commit()
